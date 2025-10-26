@@ -308,16 +308,25 @@ class HalloweenCatGame:
         # Update player (applies one-tick movement)
         self.player.update()
 
-        # Keep within path bounds; leaving the vertical path counts as a crash
-        path_top = PATH_MARGIN_TOP
-        path_bottom = INTERNAL_H - PATH_MARGIN_BOTTOM
+        # Bounds handling: keep cat within the path corridor vertically
+        # (no moving into sky or fence), and end the game if touching the left edge.
         if cat is not None:
-            # Horizontal clamp (no crash on edges; just clamp inside screen)
+            # Horizontal clamp
             if cat.rect.left < 0:
                 cat.rect.left = 0
             if cat.rect.right > INTERNAL_W:
                 cat.rect.right = INTERNAL_W
-            if cat.rect.top < path_top or cat.rect.bottom > path_bottom:
+
+            # Vertical clamp to path corridor (avoid sky and fence areas)
+            corridor_top = PATH_MARGIN_TOP
+            corridor_bottom = INTERNAL_H - PATH_MARGIN_BOTTOM
+            if cat.rect.top < corridor_top:
+                cat.rect.top = corridor_top
+            if cat.rect.bottom > corridor_bottom:
+                cat.rect.bottom = corridor_bottom
+
+            # Game over if touching left edge
+            if cat.rect.left <= 0:
                 self.game_over = True
                 if self.score > self.high_score:
                     self.high_score = self.score
@@ -327,7 +336,10 @@ class HalloweenCatGame:
         # Spawn obstacles
         self._spawn_cooldown -= 1
         if self._spawn_cooldown <= 0:
-            spawn_y = random.randint(path_top, path_bottom - OBSTACLE_MIN_H)
+            # Spawn within the path corridor vertically
+            path_top = PATH_MARGIN_TOP
+            path_bottom = INTERNAL_H - PATH_MARGIN_BOTTOM
+            spawn_y = random.randint(path_top, max(path_top, path_bottom - OBSTACLE_MIN_H))
             spawn_x = INTERNAL_W + random.randint(0, 20)
             self.obstacles.add(Obstacle(spawn_x, spawn_y))
             # Cooldown scales with speed (faster game -> shorter cooldown)
