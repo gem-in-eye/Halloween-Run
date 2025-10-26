@@ -10,7 +10,7 @@ Halloween Run — Pixelated side-scroller with AI-friendly API (reset/step)
 Controls (human):
 - Up Arrow: move up (action=1)
 - Down Arrow: move down (action=2)
-- Right Arrow: move right (action=3)
+- Space (or Right Arrow): accelerate/move right (action=3)
 - R: restart when game over
 """
 
@@ -30,7 +30,6 @@ FPS = 60
 
 # Gameplay constants (all in internal pixel units)
 CAT_W, CAT_H = 10, 10
-CAT_X = 20
 CAT_SPEED_PER_STEP = 2
 
 OBSTACLE_MIN_W, OBSTACLE_MAX_W = 8, 14
@@ -44,12 +43,18 @@ ACCELERATE_DELTA = 0.02
 GAME_SPEED_MIN = 1.0
 GAME_SPEED_MAX = 3.0
 
+# Gradual world speed growth per frame (toward GAME_SPEED_MAX)
+WORLD_SPEED_GROWTH = 0.001
+
 # Horizontal movement for the cat
 CAT_ACCEL_SPEED_X = 2  # when holding Right
 CAT_DRIFT_SPEED_X = 1  # slow drift left when not holding Right
 
 SURVIVE_REWARD = 0.1
 CRASH_PENALTY = -100.0
+
+# High score persistence
+HIGHSCORE_FILE = "highscore.txt"
 
 
 class Cat(pygame.sprite.Sprite):
@@ -149,6 +154,10 @@ class HalloweenCatGame:
         # Font for UI (scaled with pixel look after upscaling)
         self.font = pygame.font.SysFont("monospace", 10)
 
+        # High score
+        self.high_score: int = 0
+        self._load_high_score()
+
         # Create initial state
         self.reset()
 
@@ -168,8 +177,9 @@ class HalloweenCatGame:
         # Reset sprites
         self.player.empty()
         self.obstacles.empty()
+        start_x = INTERNAL_W // 2 - CAT_W // 2
         start_y = INTERNAL_H // 2 - CAT_H // 2
-        self.player.add(Cat(CAT_X, start_y))
+        self.player.add(Cat(start_x, start_y))
 
         return self._get_game_state()
 
@@ -177,7 +187,7 @@ class HalloweenCatGame:
         """Advance the game by one frame based on a discrete action.
 
         Args:
-            action: 0 nothing, 1 move_up, 2 move_down, 3 accelerate
+            action: 0 nothing, 1 move_up, 2 move_down, 3 move_right (hold)
 
         Returns:
             (game_state, reward, done)
@@ -188,6 +198,9 @@ class HalloweenCatGame:
         if self.game_over:
             # If already done, keep returning terminal state with zero reward.
             return self._get_game_state(), 0.0, True
+
+        # Increase world speed gradually over time
+        self.game_speed = min(GAME_SPEED_MAX, self.game_speed + WORLD_SPEED_GROWTH)
 
         # Translate action
         cat = self.player.sprite
@@ -216,6 +229,9 @@ class HalloweenCatGame:
                 cat.rect.right = INTERNAL_W
             if cat.rect.top < path_top or cat.rect.bottom > path_bottom:
                 self.game_over = True
+                if self.score > self.high_score:
+                    self.high_score = self.score
+                self._save_high_score()
                 return self._get_game_state(), CRASH_PENALTY, True
 
         # Spawn obstacles
@@ -236,10 +252,16 @@ class HalloweenCatGame:
         # Collision detection
         if cat is not None and pygame.sprite.spritecollideany(cat, self.obstacles):
             self.game_over = True
+            # Persist current high score on crash
+            if self.score > self.high_score:
+                self.high_score = self.score
+            self._save_high_score()
             return self._get_game_state(), CRASH_PENALTY, True
 
         # Scoring and background scroll
         self.score += 1
+        if self.score > self.high_score:
+            self.high_score = self.score
         self.bg_scroll_x += 0.2 * self.game_speed
         if self.bg_scroll_x >= INTERNAL_W:
             self.bg_scroll_x -= INTERNAL_W
@@ -297,7 +319,7 @@ class HalloweenCatGame:
                         self.reset()
             # Continuous key press handling (repeat while held)
             keys = pygame.key.get_pressed()
-            if keys[pygame.K_RIGHT]:
+            if keys[pygame.K_SPACE] or keys[pygame.K_RIGHT]:
                 action = 3
             elif keys[pygame.K_UP]:
                 action = 1
@@ -311,6 +333,8 @@ class HalloweenCatGame:
             # Draw frame
             self._update_ui()
 
+        # Persist high score on exit
+        self._save_high_score()
         pygame.quit()
 
     # --------------------------- RENDERING ------------------------------ #
@@ -339,9 +363,11 @@ class HalloweenCatGame:
         self.obstacles.draw(self.internal)
         self.player.draw(self.internal)
 
-        # UI text (score and status)
+        # UI text (score and high score)
         score_surf = self.font.render(f"Score: {self.score}", True, (220, 220, 220))
         self.internal.blit(score_surf, (2, 2))
+        high_surf = self.font.render(f"High: {self.high_score}", True, (250, 200, 80))
+        self.internal.blit(high_surf, (INTERNAL_W - high_surf.get_width() - 2, 2))
 
         if self.game_over:
             msg = self.font.render("Game Over - Press R to Restart", True, (255, 100, 100))
@@ -354,6 +380,29 @@ class HalloweenCatGame:
         scaled = pygame.transform.scale(self.internal, (WIDTH, HEIGHT))
         self.screen.blit(scaled, (0, 0))
         pygame.display.flip()
+
+    # -------------------------- PERSISTENCE ---------------------------- #
+    def _load_high_score(self):
+        try:
+            if os.path.exists(HIGHSCORE_FILE):
+                with open(HIGHSCORE_FILE, "r", encoding="utf-8") as f:
+                    v = f.read().strip()
+                    self.high_score = int(v) if v.isdigit() else 0
+            else:
+                self.high_score = 0
+        except Exception:
+            # Ignore file errors and default to 0
+            self.high_score = 0
+
+    def _save_high_score(self):
+        try:
+            # Only write if we have a non-negative integer
+            hs = max(0, int(self.high_score))
+            with open(HIGHSCORE_FILE, "w", encoding="utf-8") as f:
+                f.write(str(hs))
+        except Exception:
+            # Ignore persistence errors silently
+            pass
 
 
 if __name__ == "__main__":

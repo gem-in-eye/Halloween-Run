@@ -32,7 +32,7 @@ python main.py
 Controls:
 - Up Arrow: move up
 - Down Arrow: move down
-- Right Arrow: move right (hold to move)
+- Space (or Right Arrow): accelerate/move right (hold to move)
 - R: restart when game over
 - Esc or window close: quit
 
@@ -66,6 +66,10 @@ State vector (normalized floats):
 Rewards:
 - +0.1 for each frame survived
 - -100 on collision (episode terminates)
+
+## High score
+
+The game saves your best score to `highscore.txt` in the project folder. It updates when you crash or exit the game.
 
 ## Headless note
 
