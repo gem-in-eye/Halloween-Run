@@ -262,6 +262,9 @@ class HalloweenCatGame:
         # Start background spooky music (best-effort)
         self._init_audio_and_music()
 
+        # Gamepad support
+        self._init_gamepads()
+
         # Sprite groups
         self.player = pygame.sprite.GroupSingle()
         self.obstacles = pygame.sprite.Group()
@@ -574,17 +577,27 @@ class HalloweenCatGame:
                         running = False
                     if self.game_over and event.key == pygame.K_r:
                         self.reset()
+                elif event.type == pygame.JOYDEVICEADDED or event.type == pygame.JOYDEVICEREMOVED:
+                    # Refresh gamepads on hotplug
+                    self._init_gamepads()
             # Continuous key press handling (repeat while held)
-            keys = pygame.key.get_pressed()
-            if keys[pygame.K_SPACE] or keys[pygame.K_RIGHT]:
-                action = 3
-            elif keys[pygame.K_UP]:
-                action = 1
-            elif keys[pygame.K_DOWN]:
-                action = 2
+            gp_action = self._get_gamepad_action()
+            if gp_action is not None:
+                action = gp_action
+            else:
+                keys = pygame.key.get_pressed()
+                if keys[pygame.K_SPACE] or keys[pygame.K_RIGHT]:
+                    action = 3
+                elif keys[pygame.K_UP]:
+                    action = 1
+                elif keys[pygame.K_DOWN]:
+                    action = 2
 
-            # Advance game by one frame if not over
-            if not self.game_over:
+            # Advance or restart on accelerate while game over
+            if self.game_over:
+                if action == 3:
+                    self.reset()
+            else:
                 self.step(action)
 
             # Draw frame
@@ -679,12 +692,15 @@ class HalloweenCatGame:
         self.internal.blit(high_surf, (INTERNAL_W - high_surf.get_width() - 2, 2))
 
         if self.game_over:
-            msg = self.font.render("Game Over - Press R to Restart", True, (255, 100, 100))
+            msg = self.font.render("Game Over - Press R", True, (255, 100, 100))
+            msg2 = self.font.render("or A on Controller", True, (255, 100, 100))
+            msg3 = self.font.render(f"to Restart", True, (255, 100, 100))
             # Center the message roughly
             mx = (INTERNAL_W - msg.get_width()) // 2
             my = INTERNAL_H // 2 - 5
             self.internal.blit(msg, (mx, my))
-
+            self.internal.blit(msg2, (mx, my + msg.get_height() + 2))
+            self.internal.blit(msg3, (mx, my + msg.get_height() + 2 + msg2.get_height() + 2))
         # Scale to screen with letterboxing: keep aspect ratio and pixel scale
         sw, sh = self.screen.get_size()
         # Choose an integer scale to preserve crisp pixels
@@ -697,6 +713,86 @@ class HalloweenCatGame:
         self.screen.fill((0, 0, 0))
         self.screen.blit(scaled, (x, y))
         pygame.display.flip()
+
+    # ------------------------- GAMEPAD INPUT -------------------------- #
+    def _init_gamepads(self):
+        try:
+            pygame.joystick.init()
+        except Exception:
+            self.gamepads = []
+            return
+        count = 0
+        try:
+            count = pygame.joystick.get_count()
+        except Exception:
+            count = 0
+        self.gamepads = []
+        for i in range(count):
+            try:
+                js = pygame.joystick.Joystick(i)
+                js.init()
+                self.gamepads.append(js)
+            except Exception:
+                continue
+
+    def _get_gamepad_action(self):
+        """Return an action from the first connected gamepad, or None if no input.
+
+        Mapping (Xbox-style typical):
+        - Accelerate: A (button 0) or RB (button 5) or right trigger axis (>0.5) or D-pad right
+        - Up: Left stick up (axis 1 < -0.3) or D-pad up
+        - Down: Left stick down (axis 1 > 0.3) or D-pad down
+        """
+        if not hasattr(self, 'gamepads') or not self.gamepads:
+            return None
+        gp = self.gamepads[0]
+        try:
+            # Buttons
+            btns = gp.get_numbuttons()
+            def btn(i):
+                return gp.get_button(i) if i < btns else 0
+            # Hats (D-pad)
+            hat = (0, 0)
+            if gp.get_numhats() > 0:
+                hat = gp.get_hat(0)  # (x,y) with -1,0,1
+            # Axes
+            axes = [0.0] * gp.get_numaxes()
+            for i in range(len(axes)):
+                try:
+                    axes[i] = gp.get_axis(i)
+                except Exception:
+                    axes[i] = 0.0
+
+            # Accelerate checks
+            accel = False
+            # A button (0) or RB (5) commonly; tolerate variants
+            if btn(0) or btn(5) or btn(7):
+                accel = True
+            # D-pad right
+            if hat[0] > 0:
+                accel = True
+            # Right trigger axis on some mappings (index varies: 5, 4, or 2); treat >0.5 as pressed
+            for idx in (5, 4, 2):
+                if idx < len(axes) and axes[idx] > 0.5:
+                    accel = True
+                    break
+            if accel:
+                return 3
+
+            # Up/down via D-pad and left stick Y (axis 1)
+            if hat[1] > 0:
+                return 1
+            if hat[1] < 0:
+                return 2
+            if len(axes) > 1:
+                y = axes[1]
+                if y < -0.3:
+                    return 1
+                if y > 0.3:
+                    return 2
+        except Exception:
+            return None
+        return None
 
     # ---------------------------- AUDIO ------------------------------- #
     def _init_audio_and_music(self):
