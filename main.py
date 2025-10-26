@@ -36,8 +36,9 @@ OBSTACLE_MIN_W, OBSTACLE_MAX_W = 8, 14
 OBSTACLE_MIN_H, OBSTACLE_MAX_H = 8, 14
 OBSTACLE_BASE_SPEED = 1.2  # per-frame base speed in internal px
 
-PATH_MARGIN_TOP = 8
-PATH_MARGIN_BOTTOM = 8
+# Make the sky larger by increasing the top margin (shrinks path area)
+PATH_MARGIN_TOP = 40
+PATH_MARGIN_BOTTOM = 10
 
 ACCELERATE_DELTA = 0.02
 GAME_SPEED_MIN = 1.0
@@ -49,6 +50,10 @@ WORLD_SPEED_GROWTH = 0.001
 # Horizontal movement for the cat
 CAT_ACCEL_SPEED_X = 2  # when holding Right
 CAT_DRIFT_SPEED_X = 1  # slow drift left when not holding Right
+
+# Starfield settings
+STAR_COUNT = 50
+STAR_TWINKLE_CHANCE = 0.02  # ~2% chance per frame to adjust brightness
 
 SURVIVE_REWARD = 0.1
 CRASH_PENALTY = -100.0
@@ -145,6 +150,12 @@ class HalloweenCatGame:
 
         # Background scroll (for simple decorations)
         self.bg_scroll_x: float = 0.0
+        # Parallax sky elements
+        self.sky_scroll1: float = 0.0  # near clouds (faster)
+        self.sky_scroll2: float = 0.0  # far clouds (slower)
+        self.sky_scroll3: float = 0.0  # stars layer (very slow)
+        self.moon_x: float = float(INTERNAL_W - 30)
+        self.moon_y: float = 18.0
 
         # Obstacle spawn management
         self._spawn_cooldown: int = 0
@@ -181,6 +192,23 @@ class HalloweenCatGame:
         start_y = INTERNAL_H // 2 - CAT_H // 2
         self.player.add(Cat(start_x, start_y))
 
+        # Reset parallax sky
+        self.sky_scroll1 = 0.0
+        self.sky_scroll2 = 0.0
+        self.sky_scroll3 = 0.0
+        self.moon_x = float(random.randint(int(INTERNAL_W*0.6), INTERNAL_W - 10))
+        self.moon_y = float(random.randint(10, 25))
+
+        # Stars (spawn in sky area above the path)
+        sky_height = max(8, PATH_MARGIN_TOP - 6)
+        self.stars = []
+        for _ in range(STAR_COUNT):
+            sx = random.randint(0, INTERNAL_W - 1)
+            sy = random.randint(2, sky_height)
+            size = random.choice([1, 1, 1, 2])  # mostly small
+            bright = random.randint(170, 240)
+            self.stars.append({"x": sx, "y": sy, "size": size, "b": bright})
+
         return self._get_game_state()
 
     def step(self, action: int) -> Tuple[List[float], float, bool]:
@@ -201,6 +229,24 @@ class HalloweenCatGame:
 
         # Increase world speed gradually over time
         self.game_speed = min(GAME_SPEED_MAX, self.game_speed + WORLD_SPEED_GROWTH)
+
+        # Update parallax sky motion (subtly respond to game speed)
+        speed_norm = (self.game_speed - GAME_SPEED_MIN) / (GAME_SPEED_MAX - GAME_SPEED_MIN)
+        speed_norm = max(0.0, min(1.0, speed_norm))
+        speed_factor = 1.0 + 0.4 * speed_norm
+        self.sky_scroll1 += 0.1 * speed_factor  # near layer
+        self.sky_scroll2 += 0.025 * speed_factor # far layer
+        self.sky_scroll3 += 0.010 * speed_factor # stars layer (very slow)
+        self.moon_x -= 0.02 * speed_factor
+        if self.moon_x < -10:
+            self.moon_x = INTERNAL_W + 10
+
+        # Twinkling stars: small random brightness variation
+        if hasattr(self, 'stars'):
+            for s in self.stars:
+                if random.random() < STAR_TWINKLE_CHANCE:
+                    delta = random.choice([-20, -10, 10, 20])
+                    s['b'] = max(140, min(255, s['b'] + delta))
 
         # Translate action
         cat = self.player.sprite
@@ -342,6 +388,43 @@ class HalloweenCatGame:
         """Render the frame onto the internal surface and scale up to screen."""
         # Clear background (night sky)
         self.internal.fill((10, 8, 18))
+
+        # Stars (very small dots, parallaxed by sky_scroll3)
+        if hasattr(self, 'stars') and self.stars:
+            offset_star = int(self.sky_scroll3) % INTERNAL_W
+            for s in self.stars:
+                x = (s['x'] - offset_star) % INTERNAL_W
+                y = s['y']
+                b = s['b']
+                color = (b, b, min(255, b + 20))
+                size = s['size']
+                pygame.draw.rect(self.internal, color, pygame.Rect(x, y, size, size))
+
+        # Parallax sky: moon
+        moon_color = (250, 240, 190)
+        pygame.draw.circle(self.internal, moon_color, (int(self.moon_x), int(self.moon_y)), 7)
+        # simple crescent effect
+        pygame.draw.circle(self.internal, (10, 8, 18), (int(self.moon_x) + 3, int(self.moon_y) - 1), 6)
+
+        # Parallax sky: clouds (two layers)
+        def draw_cloud(x: int, y: int, w: int, h: int, color):
+            pygame.draw.ellipse(self.internal, color, pygame.Rect(x, y, w, h))
+            pygame.draw.ellipse(self.internal, color, pygame.Rect(x - w//3, y + 1, w, h))
+            pygame.draw.ellipse(self.internal, color, pygame.Rect(x + w//3, y + 2, w, h))
+
+        # Far layer (slower, dimmer)
+        color_far = (200, 200, 220)
+        spacing_far = 60
+        offset_far = int(self.sky_scroll2) % spacing_far
+        for cx in range(-offset_far, INTERNAL_W, spacing_far):
+            draw_cloud(cx, 20, 16, 4, color_far)
+
+        # Near layer (a bit faster, brighter)
+        color_near = (230, 230, 245)
+        spacing_near = 80
+        offset_near = int(self.sky_scroll1) % spacing_near
+        for cx in range(-offset_near, INTERNAL_W, spacing_near):
+            draw_cloud(cx + 10, 24, 20, 8, color_near)
 
         # Draw a simple scrolling path/corridor
         path_color = (30, 30, 40)
