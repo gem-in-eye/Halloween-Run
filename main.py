@@ -17,7 +17,10 @@ Controls (human):
 from __future__ import annotations
 
 import os
+import math
 import random
+import wave
+import struct
 from typing import List, Tuple
 
 import pygame
@@ -150,8 +153,22 @@ class Obstacle(pygame.sprite.Sprite):
         h = random.randint(OBSTACLE_MIN_H, OBSTACLE_MAX_H)
         kind, color = random.choice(self.TYPES)
         self.kind = kind
-        self.image = pygame.Surface((w, h))
-        self.image.fill(color)
+
+        # Try to load animated frames per type; fallback to colored rectangle
+        frames = self._load_frames_for_kind(kind, w, h)
+        if frames:
+            self.frames: list[pygame.Surface] = frames
+            self.frame_idx: float = 0.0
+            self.anim_speed: float = 0.18  # frames per update
+            self.image = self.frames[0]
+        else:
+            self.frames = []
+            self.frame_idx = 0.0
+            self.anim_speed = 0.0
+            surf = pygame.Surface((w, h))
+            surf.fill(color)
+            self.image = surf
+
         self.rect = self.image.get_rect(topleft=(x, y))
 
     def update(self, game_speed: float):
@@ -160,6 +177,61 @@ class Obstacle(pygame.sprite.Sprite):
         self.rect.x -= int(round(dx))
         if self.rect.right < 0:
             self.kill()
+
+        # Advance animation if available
+        if getattr(self, 'frames', None):
+            self.frame_idx = (self.frame_idx + self.anim_speed) % len(self.frames)
+            self.image = self.frames[int(self.frame_idx)]
+
+    def _load_frames_for_kind(self, kind: str, w: int, h: int) -> list[pygame.Surface]:
+        """Load and scale animation frames for the obstacle kind.
+
+        Attempts to load from assets/ first, then project root. Returns [] on failure.
+        """
+        def load_frame(path: str) -> pygame.Surface | None:
+            try:
+                if os.path.exists(path):
+                    img = pygame.image.load(path).convert_alpha()
+                    if img.get_size() != (w, h):
+                        img = pygame.transform.scale(img, (w, h))
+                    return img
+            except Exception:
+                return None
+            return None
+
+        names: list[str] = []
+        if kind == "pumpkin":
+            # Support possible filename typo for frame 3
+            names = ["pumpkin1.png", "pumpkin2.png", "pumpkin3.png"]
+            alt3 = "pumping3.png"
+        elif kind == "bat":
+            names = ["bat1.png", "bat2.png", "bat3.png"]
+            alt3 = None
+        elif kind == "ghost":
+            names = ["ghost1.png", "ghost2.png", "ghost3.png"]
+            alt3 = None
+        else:
+            return []
+
+        frames: list[pygame.Surface] = []
+        for i, name in enumerate(names):
+            candidates = []
+            # Prefer assets/
+            candidates.append(os.path.join("assets", name))
+            candidates.append(name)
+            # For pumpkin frame 3, also try the alt typo name if the main one is missing
+            if i == 2 and kind == "pumpkin" and alt3:
+                candidates.append(os.path.join("assets", alt3))
+                candidates.append(alt3)
+            loaded = None
+            for p in candidates:
+                loaded = load_frame(p)
+                if loaded is not None:
+                    break
+            if loaded is None:
+                return []
+            frames.append(loaded)
+        return frames
 
 
 class HalloweenCatGame:
@@ -173,6 +245,11 @@ class HalloweenCatGame:
     """
 
     def __init__(self):
+        # Initialize audio first (mixer) for better latency, then pygame
+        try:
+            pygame.mixer.pre_init(22050, -16, 1, 512)
+        except Exception:
+            pass
         # Initialize pygame and create main display and internal low-res surface.
         pygame.init()
         pygame.display.set_caption("Halloween Run — Cat")
@@ -182,6 +259,8 @@ class HalloweenCatGame:
         self.screen = pygame.display.set_mode(desktop_size, pygame.FULLSCREEN)
         self.internal = pygame.Surface((INTERNAL_W, INTERNAL_H))
         self.clock = pygame.time.Clock()
+        # Start background spooky music (best-effort)
+        self._init_audio_and_music()
 
         # Sprite groups
         self.player = pygame.sprite.GroupSingle()
@@ -253,6 +332,54 @@ class HalloweenCatGame:
             bright = random.randint(170, 240)
             self.stars.append({"x": sx, "y": sy, "size": size, "b": bright})
 
+        # Left-edge decorations: pumpkins, bats, ghosts along corridor
+        self.left_decos = []
+        corridor_top = PATH_MARGIN_TOP
+        corridor_bottom = INTERNAL_H - PATH_MARGIN_BOTTOM
+        corridor_h = max(0, corridor_bottom - corridor_top)
+        kinds = ["pumpkin", "bat", "ghost"]
+        n = len(kinds)
+        if corridor_h >= 12 and n > 0:
+            spacing = corridor_h // (n + 1)
+            size_w = 10
+            size_h = 10
+            for i, kind in enumerate(kinds, start=1):
+                y = corridor_top + i * spacing - size_h // 2
+                # Try to reuse obstacle frame loader via a small helper
+                frames = self._load_deco_frames(kind, size_w, size_h)
+                anim_speed = 0.15
+                color_map = {
+                    "pumpkin": (239, 125, 14),
+                    "bat": (70, 0, 120),
+                    "ghost": (200, 200, 255),
+                }
+                # Bobbing motion params
+                bob_amp = 3
+                # Small variation per kind
+                bob_speed = {
+                    "pumpkin": 0.035,
+                    "bat": 0.055,
+                    "ghost": 0.045,
+                }.get(kind, 0.04)
+                bob_phase = random.random() * 2 * math.pi
+                self.left_decos.append({
+                    "kind": kind,
+                    "x": 1,
+                    "y": int(y),
+                    "base_y": int(y),
+                    "w": size_w,
+                    "h": size_h,
+                    "frames": frames,
+                    "frame_idx": 0.0,
+                    "anim_speed": anim_speed,
+                    "color": color_map.get(kind, (180, 180, 180)),
+                    "bob_amp": bob_amp,
+                    "bob_speed": bob_speed,
+                    "bob_phase": bob_phase,
+                })
+        # Restart music if it was stopped on previous game over
+        self._init_audio_and_music()
+
         return self._get_game_state()
 
     def step(self, action: int) -> Tuple[List[float], float, bool]:
@@ -291,6 +418,25 @@ class HalloweenCatGame:
                 if random.random() < STAR_TWINKLE_CHANCE:
                     delta = random.choice([-20, -10, 10, 20])
                     s['b'] = max(140, min(255, s['b'] + delta))
+
+        # Advance left-edge decorations animation
+        if hasattr(self, 'left_decos'):
+            for d in self.left_decos:
+                frames = d.get("frames")
+                if frames:
+                    d["frame_idx"] = (d["frame_idx"] + d["anim_speed"]) % len(frames)
+                # Vertical bobbing motion
+                by = d.get("base_y", d.get("y", PATH_MARGIN_TOP))
+                amp = d.get("bob_amp", 3)
+                spd = d.get("bob_speed", 0.04)
+                ph = d.get("bob_phase", 0.0) + spd
+                d["bob_phase"] = ph
+                y = int(round(by + amp * math.sin(ph)))
+                # Clamp inside corridor
+                corridor_top = PATH_MARGIN_TOP
+                corridor_bottom = INTERNAL_H - PATH_MARGIN_BOTTOM
+                y = max(corridor_top, min(y, corridor_bottom - d.get("h", 10)))
+                d["y"] = y
 
         # Translate action
         cat = self.player.sprite
@@ -331,6 +477,10 @@ class HalloweenCatGame:
                 if self.score > self.high_score:
                     self.high_score = self.score
                 self._save_high_score()
+                # Stop music on game over
+                self._stop_music()
+                # Play ouch SFX
+                self._play_ouch_sfx()
                 return self._get_game_state(), CRASH_PENALTY, True
 
         # Spawn obstacles
@@ -358,13 +508,18 @@ class HalloweenCatGame:
             if self.score > self.high_score:
                 self.high_score = self.score
             self._save_high_score()
+            # Stop music on game over
+            self._stop_music()
+            # Play ouch SFX
+            self._play_ouch_sfx()
             return self._get_game_state(), CRASH_PENALTY, True
 
         # Scoring and background scroll
         self.score += 1
         if self.score > self.high_score:
             self.high_score = self.score
-        self.bg_scroll_x += 0.2 * self.game_speed
+        # Make fence move faster as the game gets faster (amplify with speed_norm)
+        self.bg_scroll_x += 0.2 * self.game_speed * (1.0 + 1.0 * speed_norm)
         if self.bg_scroll_x >= INTERNAL_W:
             self.bg_scroll_x -= INTERNAL_W
 
@@ -498,6 +653,21 @@ class HalloweenCatGame:
         for x in range(-offset, INTERNAL_W, spacing):
             pygame.draw.rect(self.internal, deco_color, pygame.Rect(x, y_bottom - 4, 3, 4))
 
+        # Left-edge animated decorations (pumpkin, bat, ghost)
+        if hasattr(self, 'left_decos'):
+            for d in self.left_decos:
+                frames = d.get("frames")
+                x = d.get("x", 1)
+                y = d.get("y", PATH_MARGIN_TOP)
+                w = d.get("w", 10)
+                h = d.get("h", 10)
+                if frames:
+                    idx = int(d.get("frame_idx", 0.0)) % len(frames)
+                    self.internal.blit(frames[idx], (x, y))
+                else:
+                    # Fallback simple rect
+                    pygame.draw.rect(self.internal, d.get("color", (180, 180, 180)), pygame.Rect(x, y, w, h))
+
         # Sprites
         self.obstacles.draw(self.internal)
         self.player.draw(self.internal)
@@ -527,6 +697,247 @@ class HalloweenCatGame:
         self.screen.fill((0, 0, 0))
         self.screen.blit(scaled, (x, y))
         pygame.display.flip()
+
+    # ---------------------------- AUDIO ------------------------------- #
+    def _init_audio_and_music(self):
+        """Initialize mixer and start looping spooky music. Best-effort, no crash if unavailable."""
+        try:
+            if not pygame.mixer.get_init():
+                # If not already initialized by pre_init
+                pygame.mixer.init(22050, -16, 1, 512)
+        except Exception:
+            return  # No audio available
+
+        try:
+            music_path = os.path.join("assets", "spooky_loop.wav")
+            self._ensure_spooky_music(music_path)
+            pygame.mixer.music.load(music_path)
+            pygame.mixer.music.set_volume(10)
+            pygame.mixer.music.play(-1)
+        except Exception:
+            # Silently ignore audio errors
+            pass
+
+    def _stop_music(self):
+        """Fade out or stop music safely."""
+        try:
+            if pygame.mixer.get_init():
+                try:
+                    pygame.mixer.music.fadeout(700)
+                except Exception:
+                    pygame.mixer.music.stop()
+        except Exception:
+            pass
+
+    def _play_ouch_sfx(self):
+        """Play a short 'ouch' sound effect once, best-effort."""
+        try:
+            if not pygame.mixer.get_init():
+                return
+            if not hasattr(self, "_ouch_sfx") or self._ouch_sfx is None:
+                path = os.path.join("assets", "ouch.wav")
+                self._ensure_ouch_sfx(path)
+                try:
+                    self._ouch_sfx = pygame.mixer.Sound(path)
+                    self._ouch_sfx.set_volume(0.6)
+                except Exception:
+                    self._ouch_sfx = None
+            if getattr(self, "_ouch_sfx", None) is not None:
+                self._ouch_sfx.play()
+        except Exception:
+            pass
+
+    def _ensure_ouch_sfx(self, path: str, overwrite: bool = False):
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+        except Exception:
+            return
+        if not overwrite and os.path.exists(path):
+            return
+        try:
+            self._generate_ouch_wav(path)
+        except Exception:
+            pass
+
+    def _generate_ouch_wav(self, path: str):
+        """Generate a short descending-pitch square chirp as an 'ouch' SFX."""
+        sr = 22050
+        dur = 0.35
+        n = int(sr * dur)
+        start_f = 900.0
+        end_f = 220.0
+        attack = max(1, int(0.01 * sr))
+        decay = max(1, int(0.12 * sr))
+        amp = 6000
+
+        frames = bytearray()
+        phase = 0.0
+        for i in range(n):
+            t = i / (n - 1) if n > 1 else 0
+            # Linear pitch slide from start_f to end_f
+            f = start_f + (end_f - start_f) * t
+            phase += (2 * math.pi * f) / sr
+            s = amp if math.sin(phase) >= 0 else -amp
+            # Tiny noise sprinkle for crunch
+            s += int((random.random() - 0.5) * 1200)
+            # Envelope
+            if i < attack:
+                s *= i / attack
+            elif n - i < decay:
+                s *= (n - i) / decay
+            # Clip
+            if s > 32767:
+                s = 32767
+            elif s < -32768:
+                s = -32768
+            frames.extend(struct.pack('<h', int(s)))
+
+        with wave.open(path, 'wb') as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(sr)
+            wf.writeframes(frames)
+
+    def _ensure_spooky_music(self, path: str, overwrite: bool = False):
+        """Create a small chiptune-like spooky loop if not present."""
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+        except Exception:
+            return
+        if not overwrite and os.path.exists(path):
+            return
+        try:
+            self._generate_spooky_wav(path)
+        except Exception:
+            # Ignore failures; music will just not play
+            pass
+
+    def _generate_spooky_wav(self, path: str):
+        """Generate a short, looping 8-bit-style spooky tune as a WAV file.
+
+        - Mono, 22050 Hz, 16-bit
+        - Two square-wave voices: lead and bass
+        - In-key of A minor, simple motif, ~9.6s loop
+        """
+        sr = 22050
+        tempo = 100.0  # BPM
+        beat_sec = 60.0 / tempo
+
+        # Frequencies (approx) for A minor scale notes
+        A4 = 440.00
+        C5 = 523.25
+        D5 = 587.33
+        E5 = 659.25
+        G5 = 783.99
+        A5 = 880.00
+        F5 = 698.46
+        # Bass
+        A2 = 110.00
+        E2 = 82.41
+        G2 = 98.00
+        F2 = 87.31
+
+        # Simple motif (lead) over 8 beats, repeated twice
+        lead_seq = [
+            (A4, 1), (C5, 1), (E5, 1), (C5, 1),
+            (G5, 1), (E5, 1), (D5, 1), (C5, 1),
+        ] * 2
+        # Bass pattern aligned to 16 beats total
+        bass_seq = [
+            (A2, 2), (E2, 2), (G2, 2), (F2, 2),
+        ] * 2
+
+        def render_voice(seq, amp):
+            samples = []
+            for (freq, beats) in seq:
+                dur = beats * beat_sec
+                n_samp = int(dur * sr)
+                # Simple A/D envelope to reduce clicks
+                attack = max(1, int(0.01 * sr))
+                decay = max(1, int(0.02 * sr))
+                for n in range(n_samp):
+                    t = n / sr
+                    # Square wave
+                    s = amp if math.sin(2 * math.pi * freq * t) >= 0 else -amp
+                    # Envelope
+                    if n < attack:
+                        s *= n / attack
+                    elif n_samp - n < decay:
+                        s *= (n_samp - n) / decay
+                    samples.append(int(s))
+            return samples
+
+        lead = render_voice(lead_seq, 3000)
+        bass = render_voice(bass_seq, 4000)
+        total = max(len(lead), len(bass))
+        # Pad shorter voice
+        if len(lead) < total:
+            lead.extend([0] * (total - len(lead)))
+        if len(bass) < total:
+            bass.extend([0] * (total - len(bass)))
+
+        # Mix and clip
+        frames = bytearray()
+        for i in range(total):
+            v = lead[i] + bass[i]
+            if v > 32767:
+                v = 32767
+            elif v < -32768:
+                v = -32768
+            frames.extend(struct.pack('<h', int(v)))
+
+        with wave.open(path, 'wb') as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(sr)
+            wf.writeframes(frames)
+
+    def _load_deco_frames(self, kind: str, w: int, h: int) -> list[pygame.Surface]:
+        """Load frames for a decoration using the same naming as obstacles."""
+        def load_frame(path: str) -> pygame.Surface | None:
+            try:
+                if os.path.exists(path):
+                    img = pygame.image.load(path).convert_alpha()
+                    if img.get_size() != (w, h):
+                        img = pygame.transform.scale(img, (w, h))
+                    return img
+            except Exception:
+                return None
+            return None
+
+        if kind == "pumpkin":
+            names = ["pumpkin1.png", "pumpkin2.png", "pumpkin3.png", "pumping3.png"]
+        elif kind == "bat":
+            names = ["bat1.png", "bat2.png", "bat3.png"]
+        elif kind == "ghost":
+            names = ["ghost1.png", "ghost2.png", "ghost3.png"]
+        else:
+            return []
+
+        frames: list[pygame.Surface] = []
+        # We expect exactly 3 frames; try to collect 3 in order
+        target = []
+        if kind == "pumpkin":
+            target = [["pumpkin1.png"], ["pumpkin2.png"], ["pumpkin3.png", "pumping3.png"]]
+        elif kind == "bat":
+            target = [["bat1.png"], ["bat2.png"], ["bat3.png"]]
+        elif kind == "ghost":
+            target = [["ghost1.png"], ["ghost2.png"], ["ghost3.png"]]
+
+        for group in target:
+            loaded = None
+            for name in group:
+                candidates = [os.path.join("assets", name), name]
+                for p in candidates:
+                    loaded = load_frame(p)
+                    if loaded is not None:
+                        break
+                if loaded is not None:
+                    break
+            if loaded is None:
+                return []
+            frames.append(loaded)
+        return frames
 
     # -------------------------- PERSISTENCE ---------------------------- #
     def _load_high_score(self):
