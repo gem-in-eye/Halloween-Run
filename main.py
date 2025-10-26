@@ -135,7 +135,10 @@ class HalloweenCatGame:
         # Initialize pygame and create main display and internal low-res surface.
         pygame.init()
         pygame.display.set_caption("Halloween Run — Cat")
-        self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
+        # Fullscreen: use desktop resolution
+        info = pygame.display.Info()
+        desktop_size = (info.current_w, info.current_h)
+        self.screen = pygame.display.set_mode(desktop_size, pygame.FULLSCREEN)
         self.internal = pygame.Surface((INTERNAL_W, INTERNAL_H))
         self.clock = pygame.time.Clock()
 
@@ -459,9 +462,17 @@ class HalloweenCatGame:
             my = INTERNAL_H // 2 - 5
             self.internal.blit(msg, (mx, my))
 
-        # Scale to screen
-        scaled = pygame.transform.scale(self.internal, (WIDTH, HEIGHT))
-        self.screen.blit(scaled, (0, 0))
+        # Scale to screen with letterboxing: keep aspect ratio and pixel scale
+        sw, sh = self.screen.get_size()
+        # Choose an integer scale to preserve crisp pixels
+        scale = max(1, min(sw // INTERNAL_W, sh // INTERNAL_H))
+        render_w, render_h = INTERNAL_W * scale, INTERNAL_H * scale
+        scaled = pygame.transform.scale(self.internal, (render_w, render_h))
+        # Center the scaled image and fill bars
+        x = (sw - render_w) // 2
+        y = (sh - render_h) // 2
+        self.screen.fill((0, 0, 0))
+        self.screen.blit(scaled, (x, y))
         pygame.display.flip()
 
     # -------------------------- PERSISTENCE ---------------------------- #
