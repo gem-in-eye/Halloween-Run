@@ -242,6 +242,8 @@ class HalloweenCatGame:
     1: move_up
     2: move_down
     3: move_right (hold to move right)
+    4: move_up + move_right (diagonal)
+    5: move_down + move_right (diagonal)
     """
 
     def __init__(self):
@@ -441,18 +443,19 @@ class HalloweenCatGame:
                 y = max(corridor_top, min(y, corridor_bottom - d.get("h", 10)))
                 d["y"] = y
 
-        # Translate action
+        # Translate action (supports diagonal combos for human play)
         cat = self.player.sprite
         if cat is not None:
             # Default: drift left when not accelerating
             cat.drift_left()
-            if action == 1:
-                cat.move_up()
-            elif action == 2:
-                cat.move_down()
-            elif action == 3:
-                # Move right while accelerating
+            # Accelerate/move right
+            if action in (3, 4, 5):
                 cat.move_right()
+            # Vertical input
+            if action in (1, 4):
+                cat.move_up()
+            elif action in (2, 5):
+                cat.move_down()
 
         # Update player (applies one-tick movement)
         self.player.update()
@@ -586,11 +589,18 @@ class HalloweenCatGame:
                 action = gp_action
             else:
                 keys = pygame.key.get_pressed()
-                if keys[pygame.K_SPACE] or keys[pygame.K_RIGHT]:
+                accel = keys[pygame.K_SPACE] or keys[pygame.K_RIGHT]
+                up = keys[pygame.K_UP]
+                down = keys[pygame.K_DOWN]
+                if accel and up:
+                    action = 4
+                elif accel and down:
+                    action = 5
+                elif accel:
                     action = 3
-                elif keys[pygame.K_UP]:
+                elif up:
                     action = 1
-                elif keys[pygame.K_DOWN]:
+                elif down:
                     action = 2
 
             # Advance or restart on accelerate while game over
@@ -776,20 +786,27 @@ class HalloweenCatGame:
                 if idx < len(axes) and axes[idx] > 0.5:
                     accel = True
                     break
-            if accel:
-                return 3
-
             # Up/down via D-pad and left stick Y (axis 1)
-            if hat[1] > 0:
-                return 1
-            if hat[1] < 0:
-                return 2
+            up_pressed = hat[1] > 0
+            down_pressed = hat[1] < 0
             if len(axes) > 1:
                 y = axes[1]
                 if y < -0.3:
-                    return 1
-                if y > 0.3:
-                    return 2
+                    up_pressed = True
+                elif y > 0.3:
+                    down_pressed = True
+
+            # Combined actions first
+            if accel and up_pressed:
+                return 4
+            if accel and down_pressed:
+                return 5
+            if accel:
+                return 3
+            if up_pressed:
+                return 1
+            if down_pressed:
+                return 2
         except Exception:
             return None
         return None
