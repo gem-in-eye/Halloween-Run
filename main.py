@@ -67,8 +67,45 @@ class Cat(pygame.sprite.Sprite):
 
     def __init__(self, x: int, y: int):
         super().__init__()
-        self.image = pygame.Surface((CAT_W, CAT_H))
-        self.image.fill((10, 10, 10))  # black cat
+        # Try to load animated frames cat1.png, cat2.png, cat3.png
+        frame_names = ["cat1.png", "cat2.png", "cat3.png"]
+        frames: list[pygame.Surface] = []
+        for name in frame_names:
+            path = name
+            # Prefer assets/ directory if file exists there
+            assets_path = os.path.join("assets", name)
+            if os.path.exists(assets_path):
+                path = assets_path
+            if os.path.exists(path):
+                try:
+                    img = pygame.image.load(path).convert_alpha()
+                    if img.get_size() != (CAT_W, CAT_H):
+                        img = pygame.transform.scale(img, (CAT_W, CAT_H))
+                    frames.append(img)
+                except Exception:
+                    frames = []
+                    break
+            else:
+                frames = []
+                break
+
+        if frames:
+            self.frames = frames
+        else:
+            # Fallback: generate simple placeholder frames with tiny variations
+            self.frames = []
+            for i in range(3):
+                surf = pygame.Surface((CAT_W, CAT_H), pygame.SRCALPHA)
+                base = 10 + i * 8
+                pygame.draw.rect(surf, (base, base, base), surf.get_rect())
+                # tiny ear pixels
+                pygame.draw.rect(surf, (0, 0, 0), pygame.Rect(2, 0, 2, 2))
+                pygame.draw.rect(surf, (0, 0, 0), pygame.Rect(CAT_W - 4, 0, 2, 2))
+                self.frames.append(surf)
+
+        self.frame_idx: float = 0.0
+        self.anim_speed: float = 0.2  # frames per update
+        self.image = self.frames[0]
         self.rect = self.image.get_rect(topleft=(x, y))
         self._dy = 0
         self._dx = 0
@@ -91,6 +128,10 @@ class Cat(pygame.sprite.Sprite):
         self.rect.x += self._dx
         self._dy = 0
         self._dx = 0
+        # Advance animation
+        if hasattr(self, "frames") and self.frames:
+            self.frame_idx = (self.frame_idx + self.anim_speed) % len(self.frames)
+            self.image = self.frames[int(self.frame_idx)]
         # Bounds check will be handled in game logic for collision.
 
 
